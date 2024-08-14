@@ -8,20 +8,52 @@
 import Foundation
 import MatrixRustSDK
 import CryptoKit
+import Combine
 
-class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListener, RoomListEntriesListener, SyncServiceStateObserver {
+class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListener, RoomListEntriesListener, SyncServiceStateObserver, RoomListLoadingStateListener {
+    
+    
     
     
     let client: Client
-    var rooms: [Room] = []
+    @Published var rooms: [Room] = []
+    @Published var sivRooms = [SivRoom]()
+    @Published var roomListItems = [RoomListItem]()
     var syncService: SyncService?
     var roomListService: RoomListService?
+    var cancellables = Set<AnyCancellable>()
+    
+    // MARK: TaskHandles
+    var roomListLoadingStateUpdateTaskHandle: TaskHandle?
+    var roomListStateUpdateTaskHandle: TaskHandle?
+    var syncServiceStateUpdateTaskHandle: TaskHandle?
+    
+    private let diffsPublisher = PassthroughSubject<[RoomListEntriesUpdate], Never>()
     
     init(client: Client) {
         self.client = client
+//        let clientRooms = client.rooms()
+        let sendable = client.rooms().map({ $0.convertToSendable() })
+        diffsPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { self.updateRoomsWithDiffs(diffs: $0) }
+            .store(in: &cancellables)
         
+    }
+    func updateRoomsWithDiffs(diffs: [RoomListEntriesUpdate]) {
+        for diff in diffs {
+            switch diff {
+            case .append(let values):
+                roomListItems.append(contentsOf: values)
+            case .reset(let values):
+                roomListItems = values
+            default:
+                break
+            }
+        }
         rooms = client.rooms()
     }
+    
     func setClientDelegate() async throws{
         print("setup")
         _ = client.setDelegate(delegate: self)
@@ -29,11 +61,11 @@ class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListe
         syncService = try await client.syncService().finish()
         await syncService?.start()
         roomListService = syncService?.roomListService()
-        _ = roomListService?.state(listener: self)
+        roomListStateUpdateTaskHandle = roomListService?.state(listener: self)
         /// none found
         // let dummyroom = try  roomListService?.room(roomId: "!kekgIjHPobIMtctiEg")
         // print(dummyroom?.displayName())
-        let result = syncService?.state(listener: self)
+        syncServiceStateUpdateTaskHandle = syncService?.state(listener: self)
     }
     func onUpdate(state: MatrixRustSDK.SyncServiceState) {
         print("onUpdate(state: MatrixRustSDK.SyncServiceState)")
@@ -50,7 +82,10 @@ class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListe
             print("No rooms")
             return
         }
-        rooms = client.rooms()
+        let sendable = client.rooms().map({ $0.convertToSendable() })
+        await MainActor.run {
+            sivRooms = sendable
+        }
         
         _ = """
             <body>
@@ -88,41 +123,49 @@ class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListe
     func updateRooms() async throws {
         print("getting roomlist")
         let roomList = try await roomListService?.allRooms()
+        let loadingstateResult = try roomList?.loadingState(listener: self )
+        roomListLoadingStateUpdateTaskHandle = loadingstateResult?.stateStream
+        loadingstateResult.publisher.sink { result in
+            print("done getting loading state")
+        }.store(in: &cancellables)
+        print(loadingstateResult)
         let result = roomList?.entries(listener: self)
         result.publisher.sink { completion in
             print("done getting result")
         } receiveValue: { wee in
             print("done")
         }
-        rooms = client.rooms()
-        print(client.rooms())
+        .store(in: &cancellables)
+//        rooms = client.rooms()
+        //print(client.rooms())
 
         
+    }
+    func onUpdate(state: MatrixRustSDK.RoomListLoadingState) {
+        print("update: RoomListLoadingState \(state)")
     }
     func onUpdate(roomEntriesUpdate: [MatrixRustSDK.RoomListEntriesUpdate]) {
         print("roomEntriesUpdate")
         print(roomEntriesUpdate)
-        
+        diffsPublisher.send(roomEntriesUpdate)
+        /*
         for update in roomEntriesUpdate {
             switch update {
             case .append(let values):
                 print("appended")
                 print(values)
-                print(rooms)
-                if rooms.count < 2 {
-                    Task {
-                        try await updateRooms()
-                    }
-                } else {
-                    for room in rooms {
-                        print("room name: \(room.id()) \(room.displayName() ?? "none")")
-                        Task {
-                            let info = try await roomListService?.room(roomId: room.id()).roomInfo()
-                            print("room with id: \(room.id()) \(info?.displayName ?? "none")")
-                        }
-                        
-                    }
+                print(client.rooms().count)
+                
+                let sendable = client.rooms().map({ $0.convertToSendable() })
+                Task { @MainActor in
+                    sivRooms = sendable
                 }
+//                client.rooms().publisher.receive(on: DispatchQueue.main).sink { result in
+//                    result.id()
+//                }
+                
+                //print(rooms)
+                
                 
                 
             case .reset(let values):
@@ -132,7 +175,7 @@ class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListe
                 print(self)
             }
         }
-        
+        */
         
 //        Task {
 //            let roomList = try await roomListService?.allRooms()
@@ -149,4 +192,13 @@ class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListe
         print(state)
     }
     
+}
+
+struct SivRoom: Identifiable, Hashable {
+    let id: String
+}
+extension Room {
+    func convertToSendable() -> SivRoom {
+        SivRoom(id: self.id())
+    }
 }
