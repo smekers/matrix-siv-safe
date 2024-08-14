@@ -18,8 +18,8 @@ struct Home: View {
                     try await viewModel.setClientDelegate()
                     
                     try await viewModel.updateRooms()
-                    try await viewModel.createRoom()
-                    try await viewModel.sendMessage()
+//                    try await viewModel.createRoom()
+//                    try await viewModel.sendMessage()
                 } catch {
                     print("Error: \(error)")
                 }
