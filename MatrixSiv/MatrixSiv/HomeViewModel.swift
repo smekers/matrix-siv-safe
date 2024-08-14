@@ -33,10 +33,13 @@ class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListe
     init(client: Client) {
         self.client = client
 //        let clientRooms = client.rooms()
-        let sendable = client.rooms().map({ $0.convertToSendable() })
+//        let sendable = client.rooms().map({ $0.convertToSendable() })
         diffsPublisher
             .receive(on: DispatchQueue.main)
-            .sink { self.updateRoomsWithDiffs(diffs: $0) }
+            .sink { 
+                self.updateRoomsWithDiffs(diffs: $0)
+                self.sivRooms = client.rooms().map({ $0.convertToSendable() })
+            }
             .store(in: &cancellables)
         
     }
@@ -51,7 +54,7 @@ class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListe
                 break
             }
         }
-        rooms = client.rooms()
+        
     }
     
     func setClientDelegate() async throws{

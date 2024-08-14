@@ -36,9 +36,9 @@ struct Home: View {
                     }
                 }
             }
-            Text("rooms: \(viewModel.rooms.count)")
-//            roomListView
-//                .frame(maxWidth: .infinity)
+            Text("rooms: \(viewModel.sivRooms.count)")
+            roomListView
+                .frame(maxWidth: .infinity)
         }
         
         
@@ -46,13 +46,19 @@ struct Home: View {
     
     @ViewBuilder
     var roomListView: some View {
-        ForEach(viewModel.rooms, id: \.id) { room in
-            HStack {
-                Image(systemName: "shared.with.you.circle")
-                    size(30)
-                Text(room.id())
+        ScrollView {
+            VStack {
+                ForEach(viewModel.sivRooms, id: \.id) { room in
+                    HStack {
+                        Image(systemName: "shared.with.you.circle")
+                            size(30)
+                        Text(room.id)
+                    }
+                }
+                Spacer()
             }
         }
+        
     }
 }
 
