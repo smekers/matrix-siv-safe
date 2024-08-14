@@ -77,11 +77,20 @@ class HomeViewModel: ClientDelegate, ObservableObject, RoomListServiceStateListe
         print("getting roomlist")
         let roomList = try await roomListService?.allRooms()
         let result = roomList?.entries(listener: self)
-        print(result?.entries.count ?? 0)
         
     }
     func onUpdate(roomEntriesUpdate: [MatrixRustSDK.RoomListEntriesUpdate]) {
         print(roomEntriesUpdate)
+        
+//        Task {
+//            let roomList = try await roomListService?.allRooms()
+//            let result = roomList?.entries(listener: self)
+//            
+//            result.publisher.map { output in
+//                output.
+//            }
+//            print(roomList)
+//        }
     }
     func onUpdate(state: MatrixRustSDK.RoomListServiceState) {
         print(state)
