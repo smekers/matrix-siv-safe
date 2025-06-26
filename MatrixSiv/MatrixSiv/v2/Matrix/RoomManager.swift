@@ -256,6 +256,10 @@ struct SivMessage: Identifiable {
             
     }
     
+    var isToday: Bool {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
+        return Calendar.current.isDateInToday(date)
+    }
     var date: String {
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
         let dateFormatter = DateFormatter()

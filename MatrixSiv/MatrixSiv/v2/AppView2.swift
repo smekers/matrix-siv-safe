@@ -11,6 +11,8 @@ import MatrixRustSDK
 struct AppView2: View {
     @State var isAuthenticated: Bool = false
     @State var matrixClient: Client? = nil
+    @State var isLoading = true
+    @State var animateGradient: Bool = false
     var body: some View {
         Group {
             if MatrixManager.shared.isLoggedIn() {
@@ -19,18 +21,28 @@ struct AppView2: View {
                 AuthView()
             }
         }
-        .onAppear {
+        .overlay(content: {
+            if isLoading || MatrixManager.shared.roomListLoadingState == .notLoaded {
+                Rectangle()
+                    .sivGradientMask(startPoint: animateGradient ? .topLeading : .bottomLeading, endPoint: animateGradient ? .bottomTrailing : .topTrailing)
+                    .onAppear {
+                            withAnimation(.linear(duration: 2.0).repeatForever(autoreverses: true)) {
+                                animateGradient.toggle()
+                            }
+                        }
+                    .ignoresSafeArea(.all)
+            }
+            
+        })
+        .task  {
+            isLoading = true
             if let existingSession = Session.loadFromUserDefaults() {
                 print("Session found. attempting to restore")
-                Task {
-                    await MatrixManager.restoreSession(session: existingSession)
-                }
+                
+                await MatrixManager.restoreSession(session: existingSession)
+                
             }
-            if !MatrixManager.shared.isLoggedIn() {
-                print("We need to login")
-            } else {
-                print("Logged in")
-            }
+            isLoading = false
         }
         
         

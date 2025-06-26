@@ -13,7 +13,7 @@ struct RoomListCell: View {
     let basicRoom: SivRoom
     let roomUpdateToggle: Bool
     @State var room: SivRoom
-    @State var message: String = "Message placeholder"
+    @State var message: String = ""
     @State var time: String = ""
     @State var roomListItem: RoomListItem? = nil
     @State var isEncrypted: Bool = false
@@ -101,11 +101,15 @@ struct RoomListCell: View {
           if room.membership == .invited {
               message = "You have been invited to join this room"
           }
-          let lastEvent = await roomListItem.latestEvent()
+            let lastEvent = await roomListItem.latestEvent()?.generateSivMessage()
+            if let lastEvent {
+                message = lastEvent.message
             
-          message = lastEvent?.getMessage() ?? ""
-          time = lastEvent?.timestamp.description ?? ""
+                time = lastEvent.isToday ? lastEvent.time : lastEvent.date
+                
+            }
             isEncrypted = await roomListItem.isEncrypted()
+            
         }
     }
     func messageAndTime() async -> String {

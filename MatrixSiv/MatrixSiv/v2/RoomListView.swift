@@ -186,18 +186,13 @@ struct RoomListView: View {
 
 
 extension View {
-    func sivGradientMask() -> some View {
-        /*
-         Color(red: 255, green: 192, blue: 124),
-         Color(red: 212, green: 108, blue: 118),
-         Color(red: 62, green: 25, blue: 110)
-         */
+    func sivGradientMask(startPoint: UnitPoint = .topLeading, endPoint: UnitPoint = .bottomTrailing) -> some View {
         self.overlay {
             LinearGradient(colors: [
                 Color(red: 255/255, green: 192/255, blue: 124/255),
                 Color(red: 212/255, green: 108/255, blue: 118/255),
                 Color(red: 62/255, green: 25/255, blue: 110/255)
-            ], startPoint: .topLeading, endPoint: .bottomTrailing).mask(self)
+            ], startPoint: startPoint, endPoint: endPoint ).mask(self)
         }
     }
 }

@@ -37,6 +37,7 @@ import UIKit
     var emptyRooms: [SivRoom] = []
     
     var rawRoomListItems: [RoomListItem] = []
+    var roomListLoadingState: RoomListLoadingState = .notLoaded
     var roomUpdateToggle: Bool = false
     
     /// - Returns: true if the string matches the current user's userID
@@ -48,7 +49,16 @@ import UIKit
     }
     
     func isLoggedIn() -> Bool {
-        client != nil
+        guard let client else {
+            return false
+        }
+        do {
+            let _ = try client.session()
+            return true
+        } catch {
+            return false
+        }
+        
     }
     
     func newLogin(client: Client) {
@@ -74,6 +84,7 @@ import UIKit
             self.syncStateTaskHandle = nil
             
             self.roomListService = nil
+            self.roomListLoadingState = .notLoaded
             roomListEntriesResult = nil
             roomListEntriesResultTaskHandle = nil
             
@@ -348,6 +359,9 @@ extension MatrixManager: @preconcurrency SyncServiceStateObserver {
 extension MatrixManager: @preconcurrency RoomListLoadingStateListener {
     func onUpdate(state: MatrixRustSDK.RoomListLoadingState) {
         print("RoomListLoadingState updated: \(state)")
+        DispatchQueue.main.async { [weak self] in
+            self?.roomListLoadingState = state
+        }
     }
     
     
