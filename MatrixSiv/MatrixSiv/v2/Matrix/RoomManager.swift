@@ -46,9 +46,6 @@ class RoomManager: ObservableObject {
     func setup() async throws {
         var timelineInitialized = false
         var retries = 0
-//        if roomInfo.membership == .invited {
-//            try await roomListItem.invitedRoom().join()
-//        }
         while !timelineInitialized {
             if retries > 10 {
                 break
@@ -66,15 +63,17 @@ class RoomManager: ObservableObject {
             }
         }
         
-        
+        /// TimelineListener updates us when there are new messages
         timelineListenerTaskHandle = try await roomListItem.fullRoom().timeline().addListener(listener: self)
     }
 
+    /// Initializes timeline. `eventTypes` can be modified to filter what events to load
     func initializeTimeline() async throws {
         try await roomListItem.initTimeline(eventTypeFilter: TimelineEventTypeFilter.exclude(eventTypes: StateEventType.allcases.map { FilterTimelineEventType.state(eventType: $0) }), internalIdPrefix: nil)
         timeline = try await roomListItem.fullRoom().timeline()
     }
 
+    /// Loads older messages.
     func paginateBackwards() async throws {
         guard let timeline else {
             print("MERROR: no timeline")
@@ -84,6 +83,7 @@ class RoomManager: ObservableObject {
         backPaginationStatusTaskHandle = try await timeline.subscribeToBackPaginationStatus(listener: self)
     }
     
+    /// Toggles reaction on an event/message
     func toggleReaction(reaction: String, eventId: String) async {
         do {
             try await timeline?.toggleReaction(itemId: .eventId(eventId: eventId), key: reaction)
@@ -94,6 +94,7 @@ class RoomManager: ObservableObject {
         
     }
     
+    /// Sends text message to room. If there's a `parentMessage`, it will be sent as a reply in a thread.
     func sendPlainMessage(message: String, parentMessage: SivMessage?) async {
         do {
             let newEvent = messageEventContentFromMarkdown(md: message)
@@ -136,10 +137,6 @@ extension RoomManager: @preconcurrency TimelineListener {
                     }
                 }
             }
-            // see if user already sent something
-//            userAlreadySentMessage = updatedMessages.contains(where: { $0.fromSelf })
-            
-            
             self.sivMessages = updatedMessages
             self.reversedSivMessages = updatedMessages.reversed()
             self.timelineChange.toggle()
@@ -235,7 +232,6 @@ extension RoomManager: @preconcurrency PaginationStatusListener {
                 }
             }
         case .paginating:
-//            logger.debug("paginating")
             return
         }
     }

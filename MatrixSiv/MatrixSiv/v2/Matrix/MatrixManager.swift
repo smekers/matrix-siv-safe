@@ -39,18 +39,18 @@ import UIKit
     var rawRoomListItems: [RoomListItem] = []
     var roomUpdateToggle: Bool = false
     
-    init() {
-    }
-    
+    /// - Returns: true if the string matches the current user's userID
     func isUserId(id: String) -> Bool {
         guard let userId = try? client?.userId() else {
             return false
         }
         return userId == id
     }
+    
     func isLoggedIn() -> Bool {
         client != nil
     }
+    
     func newLogin(client: Client) {
         self.client = client
         Task {
@@ -63,7 +63,7 @@ import UIKit
         }
     }
 
-    
+    /// Logs out client and clears stored session and other stored variables from the client
     func logout() async {
         do {
             Session.clearUserDefaults()
@@ -93,6 +93,7 @@ import UIKit
         
     }
     
+    /// - Returns: a UIImage from an avatar from matrix
     func getData(avatar: String) async -> UIImage? {
         do {
             let data = try await client?.getMediaContent(mediaSource: .fromUrl(url: avatar))
@@ -104,10 +105,9 @@ import UIKit
         }
     }
     
-    /// - checks roomManagersDict if there's an existing RoomManager for the roomId
-    /// - returns RoomManager from roomManagersDict if it exists so we don't have to create another instance for that roomId
-    /// - creates a new RoomManager and calls setup() to initialize the timeline
-    /// - returns the new RoomManager
+    /// Checks roomManagersDict if there's an existing RoomManager for the roomId.
+    /// Creates a new one if there's no existing RoomManager, calls setup() to initializeTimeline then saves the new RoomManager in the roomManagersDict
+    /// - Returns: existing RoomManager if available, else, returns newly created RoomManager
     func getRoomManager(roomId: String) async -> RoomManager? {
         if let existing =  roomManagersDict[roomId] {
             return existing
@@ -131,19 +131,27 @@ import UIKit
     
     }
     
+    /// Sets delegetes/listeners so we can monitor the client and roomList
     func loadClient() async throws {
         guard self.client != nil else {
             return
         }
+        
+        /// ClientDelegate monitors the client
         clientDelegateTaskHandle = client?.setDelegate(delegate: self)
+        /// SyncService handles the sync of rooms
         syncService = try await client?.syncService().finish()
         await syncService?.start()
         roomListService = syncService?.roomListService()
+        /// SyncServiceStateObserver gives us updates regarding the SyncServiceState
         syncStateTaskHandle = syncService?.state(listener: self)
         let roomList = try await roomListService?.allRooms()
+        /// RoomListEntriesListener updates us when there's changes in the roomList
         roomListEntriesResult = roomList?.entriesWithDynamicAdapters(pageSize: 20, listener: self)
+        /// roomListEntriesResult.controller() must be modified so we can receive updates. Without this we don't receive updates
         _ = roomListEntriesResult?.controller().setFilter(kind: .unread)
         roomListEntriesResultEntriesStream = roomListEntriesResult?.entriesStream()
+        /// RoomListLoadingStateListener gives us updates on  RoomListLoadingState
         let stateUpdatesSubscriptionResult = try roomList?.loadingState(listener: self)
         stateUpdatesTaskHandle = stateUpdatesSubscriptionResult?.stateStream
         
@@ -217,8 +225,9 @@ import UIKit
             return nil
         }
     }
+    
+    /// Refreshes rooms by getting the loaded rooms from client
     func refreshRooms() async -> [SivRoom]{
-        // filter to show joined rooms only
         rawRooms = client?.rooms() ?? []
         rooms = await getRooms()
         
@@ -226,13 +235,11 @@ import UIKit
         return rooms
     }
     
+    /// Gets all loaded rooms from client and converts them to [SivRoom] so we can use it on SwiftUI's Foreach
     func getRooms() async -> [SivRoom]  {
-        
-        /// clent.rooms is populated over time in the background by MatrixSDK
         let rawRooms = client?.rooms() ?? []
         print("raw rooms: \(rawRooms.count)")
 
-        // convert rooms to an identifiable struct since SwiftUI ForEach can't iterate throgh [Room]
         let updatedRooms = await withTaskGroup(of:SivRoom.self , returning: [SivRoom].self) { group in
             for room in rawRooms {
                 group.addTask {
