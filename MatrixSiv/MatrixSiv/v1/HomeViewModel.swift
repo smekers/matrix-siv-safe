@@ -5,6 +5,7 @@
 //  Created by Rachel Castor on 8/13/24.
 //
 
+/*
 import Foundation
 import MatrixRustSDK
 import CryptoKit
@@ -201,3 +202,4 @@ extension Room {
         SivRoom(id: self.id())
     }
 }
+*/
