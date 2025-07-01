@@ -100,29 +100,3 @@ Toggles the reaction of the user for the given eventId
 Sends a text message to the room. Note that are not limited to text. Use this function as a template on sending messages but messages can be markdown, json, html, image, or other file types.
 ##### onUpdate
 This function gets called automatically when there's a new event in the room. Use this to update the view of your messages
-
-### How to login the user?
-The login screen is found in [SignInView](v2/Auth/SignInView.swift). It asks for the user's username and password and calls the static `login` function from [MatrixManager](v2/Matrix/MatrixManager.swift).
-
-The login function creates a client from `MatrixRustSDK` `ClientBuilder`. Then it tries to login that client to the matrix server. The client is stored in `MatrixManager.shared`
-
-### How to know if there's a user logged in
-[MatrixManager](v2/Matrix/MatrixManager.swift) has a function called `isLoggedIn` which tries to get the client's session. No session means the client is logged out
-
-### How to register the user?
-[MatrixManager](v2/Matrix/MatrixManager.swift) has a static function called `registerUser` which is used in [CreateAccountView](v2/Auth/CreateAccountView.swift).
-MatrixRustSDK does not provide a way to create/register a user so we're utilizing Swift's `URLSession` library to create a user using their REST API [/register](https://spec.matrix.org/v1.15/client-server-api/#post_matrixclientv3register) endpoint. Please note that for the `registerUser` function to work, you should set the AppConstants based on the data from your own homeserver. If it's still not working (probably because the endpoint is updated), you can experiment with it using Postman or other API testing apps
-
-### How to get the user rooms?
-You can get the user rooms by simply calling `client.allRooms()` from [MatrixManager](v2/Matrix/MatrixManager.swift). However, this method might return 0 rooms if you called it too early.
-
-Another way to get rooms is by using `RoomListEntriesListener`. You can find it in [MatrixManager](v2/Matrix/MatrixManager.swift)'s `loadClient` function.
-By conforming MatrixManager to the RoomListEntriesListener protocol, we allow it to listen on updates to the roomList. From there, you can decide what you want to do with the RoomListItems
-
-Please note that the rooms returned by allRooms() or RoomListEntriesListener are not ordered in particular so I suggest making a function to sort the rooms based on what you need.
-
-### How to get the room messages?
-For basic `MatrixRustSDK`, you need to get a Room then initialize it's timeline and have a class that conforms to `TimelineListener` so you can get timeline updates such as new messages or new reactions. For this app, we use [RoomManager](v2/Matrix/RoomManager.swift).
-
-`RoomManager` initializes the timeline and controlls the pagination so we can see messages and reactions in real time. RoomManager also provides the functions to interact with a room like sending messages and reactions.
-
