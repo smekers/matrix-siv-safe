@@ -1,0 +1,586 @@
+//
+//  MatrixManager.swift
+//  MatrixSiv
+//
+//  Created by Rachel Castor on 5/14/25.
+//
+
+import Foundation
+import MatrixRustSDK
+import Combine
+import UIKit
+
+/// This class is a singleton that manages the Matrix client, sync service, and room list.
+/// It handles logging in, logging out, and provides methods to interact with rooms and messages.
+@MainActor @Observable final class MatrixManager {
+    static let shared: MatrixManager = MatrixManager()
+    
+    private(set) var client: Client? = nil
+    private var clientDelegateTaskHandle: TaskHandle? = nil
+    
+    private var syncService: SyncService? = nil
+    private var syncStateTaskHandle: TaskHandle? = nil
+    
+    private var roomListService: RoomListService? = nil
+    
+    private var roomListEntriesResult: RoomListEntriesWithDynamicAdaptersResult? = nil
+    private var roomListEntriesResultTaskHandle: TaskHandle? = nil
+    private var roomListEntriesResultEntriesStream: TaskHandle? = nil
+    
+    
+    private var stateUpdatesTaskHandle: TaskHandle? = nil
+    
+    var cancellables = Set<AnyCancellable>()
+    
+    var roomManagersDict: [String: RoomManager] = [:]
+    
+    var rooms: [SivRoom] = []
+    var rawRooms: [Room] = []
+    var emptyRooms: [SivRoom] = []
+    
+    var rawRoomListItems: [RoomListItem] = []
+    var roomListLoadingState: RoomListLoadingState = .notLoaded
+    var roomUpdateToggle: Bool = false
+    
+    /// - Returns: true if the string matches the current user's userID
+    func isUserId(id: String) -> Bool {
+        guard let userId = try? client?.userId() else {
+            return false
+        }
+        return userId == id
+    }
+    
+    func isLoggedIn() -> Bool {
+        guard let client else {
+            return false
+        }
+        do {
+            let _ = try client.session()
+            return true
+        } catch {
+            return false
+        }
+        
+    }
+    
+    func newLogin(client: Client) {
+        self.client = client
+        Task {
+            do {
+                try await loadClient()
+            } catch {
+                print("Error setting up client: \(error)")
+            }
+            
+        }
+    }
+
+    /// Logs out client and clears stored session and other stored variables from the client
+    func logout() async {
+        do {
+            Session.clearUserDefaults()
+            try await client?.logout()
+            self.client = nil
+            self.clientDelegateTaskHandle = nil
+            self.syncService = nil
+            self.syncStateTaskHandle = nil
+            
+            self.roomListService = nil
+            self.roomListLoadingState = .notLoaded
+            roomListEntriesResult = nil
+            roomListEntriesResultTaskHandle = nil
+            
+            
+            stateUpdatesTaskHandle = nil
+            
+            cancellables = Set<AnyCancellable>()
+            
+            roomManagersDict = [:]
+            
+             rooms = []
+             rawRooms = []
+             emptyRooms = []
+        } catch {
+            print("Error logging out: \(error)")
+        }
+        
+    }
+    
+    /// - Returns: a UIImage from an avatar from matrix
+    func getData(avatar: String) async -> UIImage? {
+        do {
+            let data = try await client?.getMediaContent(mediaSource: .fromUrl(url: avatar))
+            let uiimage = UIImage(data: data!)
+            return uiimage
+        } catch {
+            print("error getting avatar \(error)")
+            return nil
+        }
+    }
+    
+    /// Checks roomManagersDict if there's an existing RoomManager for the roomId.
+    /// Creates a new one if there's no existing RoomManager, calls setup() to initializeTimeline then saves the new RoomManager in the roomManagersDict
+    /// - Returns: existing RoomManager if available, else, returns newly created RoomManager
+    func getRoomManager(roomId: String) async -> RoomManager? {
+        if let existing =  roomManagersDict[roomId] {
+            return existing
+        }
+        do {
+            let roomListItem = await getRoomListItem(roomId: roomId)
+            let roomInfo = try await roomListItem?.roomInfo()
+            let room = await roomListItem?.convertToSivRoom()
+            if let room, let roomListItem, let roomInfo {
+                let manager = RoomManager(sivRoom: room, roomListItem: roomListItem, roomInfo: roomInfo)
+                try await manager.setup()
+                roomManagersDict[roomId] = manager
+                return manager
+            } else {
+                return nil
+            }
+        } catch {
+            print("Unable to get roomManager \(roomId)")
+            return nil
+        }
+    
+    }
+    
+    /// Sets delegetes/listeners so we can monitor the client and roomList
+    func loadClient() async throws {
+        guard self.client != nil else {
+            return
+        }
+        
+        /// ClientDelegate monitors the client
+        clientDelegateTaskHandle = client?.setDelegate(delegate: self)
+        /// SyncService handles the sync of rooms
+        syncService = try await client?.syncService().finish()
+        await syncService?.start()
+        roomListService = syncService?.roomListService()
+        /// SyncServiceStateObserver gives us updates regarding the SyncServiceState
+        syncStateTaskHandle = syncService?.state(listener: self)
+        let roomList = try await roomListService?.allRooms()
+        /// RoomListEntriesListener updates us when there's changes in the roomList
+        roomListEntriesResult = roomList?.entriesWithDynamicAdapters(pageSize: 20, listener: self)
+        /// roomListEntriesResult.controller() must be modified so we can receive updates. Without this we don't receive updates
+        _ = roomListEntriesResult?.controller().setFilter(kind: .unread)
+        roomListEntriesResultEntriesStream = roomListEntriesResult?.entriesStream()
+        /// RoomListLoadingStateListener gives us updates on  RoomListLoadingState
+        let stateUpdatesSubscriptionResult = try roomList?.loadingState(listener: self)
+        stateUpdatesTaskHandle = stateUpdatesSubscriptionResult?.stateStream
+        
+        await client?.enableAllSendQueues(enable: true)
+        
+        try await Task.sleep(for: .seconds(3))
+        
+        _ = await refreshRooms()
+        
+    }
+    
+    
+    func joinRoom(roomId: String) async -> Room? {
+        guard let client = client else {
+            fatalError("Client not set up yet")
+        }
+        do {
+            return try await client.joinRoomById(roomId: roomId)
+        } catch {
+            print("Error joining room: \(error)")
+            return nil
+            
+        }
+    }
+    
+    /// - checks if there is a DM room between current user and the recepient user
+    /// - returns existing DM room
+    /// - if unavailable, create a new DM room
+    /// - returns new DM room
+    func getOrCreateDMRoom(userId: String) async -> Room? {
+        do {
+            let room = try  self.client?.getDmRoom(userId: userId)
+            if let room {
+                return room
+            }
+            
+            let _ = try await self.client!.createRoom(request: .init(name: nil, isEncrypted: false, isDirect: true, visibility: .private, preset: .trustedPrivateChat, invite: [userId]))
+            return try self.client!.getDmRoom(userId: userId)
+        } catch {
+            print("Error getting DM room \(error)")
+        }
+        return nil
+    }
+    
+    /// sends initialMessage to the DM room
+    /// - returns the RommManager for the DM room
+    func createDM(userId: String, initialMessage: String) async -> RoomManager? {
+        let room = await getOrCreateDMRoom(userId: userId)
+        guard let room else { return nil }
+        /// get RoomManager so we can send messages
+        let roomManager = await getRoomManager(roomId: room.id())
+        if let message = initialMessage.nullableTrimmed {
+            await roomManager?.sendPlainMessage(message: message, parentMessage: nil)
+        }
+        return roomManager
+    }
+    
+    /// - creates a new Room and invites the given userIds to join
+    /// - returns the RoomManager for the new room
+    func createRoom(roomName: String, topic: String?, userIds: [String], initialMessage: String) async -> RoomManager? {
+        do {
+            let roomId = try await MatrixManager.shared.client?.createRoom(request: .init(name: roomName, topic: topic, isEncrypted: false, visibility: .private, preset: .privateChat, invite: userIds))
+            guard let roomId else { return nil }
+            let roomManager = await getRoomManager(roomId: roomId)
+            if let message = initialMessage.nullableTrimmed {
+                await roomManager?.sendPlainMessage(message: message, parentMessage: nil)
+            }
+            return roomManager
+        } catch {
+            print("Error creating room: \(error)")
+            return nil
+        }
+    }
+    
+    /// Refreshes rooms by getting the loaded rooms from client
+    func refreshRooms() async -> [SivRoom]{
+        rawRooms = client?.rooms() ?? []
+        rooms = await getRooms()
+        
+        print("rooms: \(rooms.count)")
+        return rooms
+    }
+    
+    /// Gets all loaded rooms from client and converts them to [SivRoom] so we can use it on SwiftUI's Foreach
+    func getRooms() async -> [SivRoom]  {
+        let rawRooms = client?.rooms() ?? []
+        print("raw rooms: \(rawRooms.count)")
+
+        let updatedRooms = await withTaskGroup(of:SivRoom.self , returning: [SivRoom].self) { group in
+            for room in rawRooms {
+                group.addTask {
+                    await room.convertToSivRoom()
+                }
+                
+            }
+            var rooms : [SivRoom] = []
+            for await result in group {
+                rooms.append(result)
+            }
+            return rooms
+        }
+        
+        return updatedRooms
+    }
+    
+    func getRoomListItem(roomId: String, persitent: Bool = true) async -> RoomListItem? {
+        guard let roomListService else { return nil }
+        
+        do {
+            let roomListItem = try roomListService.room(roomId: roomId)
+            return roomListItem
+        } catch {
+            print("Error getting roomListItem: \(error)")
+            try? await Task.sleep(for: .seconds(2))
+            return await getRoomListItem(roomId: roomId)
+        }
+    }
+    
+    
+    
+}
+extension MatrixManager: @preconcurrency RoomListEntriesListener {
+    
+    /// This delegate gets called when there are changes in the roomList (e.g. new message/reactions)
+    func onUpdate(roomEntriesUpdate: [MatrixRustSDK.RoomListEntriesUpdate]) {
+        var updatedRooms: [RoomListItem] = rawRoomListItems
+        var changes = [CollectionDifference<MatrixRustSDK.RoomListItem>.Change]()
+        for update in roomEntriesUpdate {
+            switch update {
+            case .append(let values):
+                for (index, item) in values.enumerated() {
+                    changes.append(.insert(offset: updatedRooms.count + index, element: item, associatedWith: nil))
+                }
+            case .clear:
+                for (index, item) in updatedRooms.enumerated() {
+                    changes.append(.remove(offset: index, element: item, associatedWith: nil))
+                }
+            case .pushFront(let value):
+                changes.append(.insert(offset: 0, element: value, associatedWith: nil))
+            case .pushBack(let value):
+                changes.append(.insert(offset: updatedRooms.count, element: value, associatedWith: nil))
+            case .insert(let index, let value):
+                changes.append(.insert(offset: Int(index), element: value, associatedWith: nil))
+            case .set(let index, let value):
+                changes.append(.remove(offset: Int(index), element: value, associatedWith: nil))
+                changes.append(.insert(offset: Int(index), element: value, associatedWith: nil))
+            case .remove(let index):
+                changes.append(.remove(offset: Int(index), element: updatedRooms[Int(index)], associatedWith: nil))
+            case .truncate(_):
+                break
+            case .reset(let values):
+                for (index, item) in updatedRooms.enumerated() {
+                    changes.append(.remove(offset: index, element: item, associatedWith: nil))
+                }
+                for (index, item) in values.enumerated() {
+                    changes.append(.insert(offset: index, element: item, associatedWith: nil))
+                }
+            default:
+                break
+            }
+        }
+        let diff = CollectionDifference(changes)
+        if let diff {
+            updatedRooms = updatedRooms.applying(diff) ?? []
+        } else {
+            print("🔴 Failed to apply diff")
+        }
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.roomUpdateToggle.toggle()
+            self?.rawRoomListItems = updatedRooms
+        }
+    }
+    
+}
+
+extension MatrixManager: @preconcurrency ClientDelegate {
+    func didReceiveAuthError(isSoftLogout: Bool) {
+        print("received auth error")
+    }
+    
+    func didRefreshTokens() {
+        print("token refreshed")
+    }
+
+}
+extension MatrixManager: @preconcurrency SyncServiceStateObserver {
+    func onUpdate(state: MatrixRustSDK.SyncServiceState) {
+        print("Sync state updated: \(state)")
+        rawRooms = client?.rooms() ?? []
+    }
+}
+
+extension MatrixManager: @preconcurrency RoomListLoadingStateListener {
+    func onUpdate(state: MatrixRustSDK.RoomListLoadingState) {
+        print("RoomListLoadingState updated: \(state)")
+        DispatchQueue.main.async { [weak self] in
+            self?.roomListLoadingState = state
+        }
+    }
+    
+    
+}
+
+// MARK: static functions
+extension MatrixManager {
+    static func login(homeserver: String, email: String, password: String) async -> Client? {
+        do {
+            let newClient = try await ClientBuilder()
+                .slidingSyncVersionBuilder(versionBuilder: .native)
+                .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
+                .build()
+            try await newClient.login(username: email, password: password, initialDeviceName: nil, deviceId: nil)
+            let session = try newClient.session()
+            session.saveToUserDefaults()
+            print("Hello \(session.userId)")
+            MatrixManager.shared.newLogin(client: newClient)
+            return newClient
+        } catch {
+            print("Error loggin in: \(error)")
+            return nil
+        }
+       
+    }
+    
+    static func restoreSession(session: Session) async {
+        do {
+            let newClient = try await ClientBuilder()
+                .slidingSyncVersionBuilder(versionBuilder: .native)
+                .serverNameOrHomeserverUrl(serverNameOrUrl: session.homeserverUrl)
+                .build()
+            try await newClient.restoreSession(session: session)
+            let session = try newClient.session()
+            session.saveToUserDefaults()
+            MatrixManager.shared.newLogin(client: newClient)
+            print("Successfully restored session")
+        } catch {
+            print("Error restoring session: \(error)")
+        }
+        
+        
+        
+    }
+    
+    /// We're using POST because matrix library doesn't allow registering users
+    static func registerUser(homeserver: String = AppConstants.homeserver, username: String, password: String) async -> Client? {
+        let body = MatrixRegistrationRequest(
+            username: username,
+            password: password,
+            auth: MatrixAuthStep1Request(
+                session: nil,
+                type: .dummy
+            )
+        )
+        do {
+            _ = try await body.execute()
+            return await self.login(homeserver: homeserver, email: username, password: password)
+        } catch {
+            print("Error registering user to matrix: \(error)")
+            return nil
+        }
+    }
+}
+
+struct SivRoom: Identifiable {
+    let id: String
+    let avatarUrl: String?
+    let displayName: String
+    var isDirect: Bool = false
+    let room: Room?
+    let membersCount: Int
+    var membership: Membership = .invited
+    let isEmpty: Bool = false
+    var isMarkedUnread = true
+}
+
+extension Room {
+    func convertToSivRoom() async -> SivRoom {
+            let isDirect = await self.isDirect()
+            let membersCount = try? await self.members().len()
+            return SivRoom(
+                id: self.id(),
+                avatarUrl: self.avatarUrl(),
+                displayName: self.displayName() ?? "no name",
+                isDirect: isDirect,
+                room: self,
+                membersCount: Int(membersCount ?? 0)
+            )
+    }
+    func convertToBasicSivRoom() -> SivRoom {
+        return SivRoom(
+            id: self.id(),
+            avatarUrl: self.avatarUrl(),
+            displayName: self.displayName() ?? "no name",
+            isDirect: false,
+            room: self,
+            membersCount: 0
+        )
+    }
+    
+    
+}
+
+extension RoomListItem {
+    func convertToSivRoom() async -> SivRoom {
+        let isDirect = await self.isDirect()
+        let room = try?  self.fullRoom()
+        var isMarkedUnread: Bool = true
+        
+        do {
+            let roomInfo = try await self.roomInfo()
+            isMarkedUnread = roomInfo.isMarkedUnread
+        } catch {
+            print("unable to retrieve roominfo")
+        }
+        return SivRoom(
+            id: self.id(),
+            avatarUrl: self.avatarUrl(),
+            displayName: self.displayName() ?? "",
+            isDirect: isDirect,
+            room: room,
+            membersCount: 0,
+            membership: self.membership(),
+            isMarkedUnread: isMarkedUnread
+        )
+    }
+    
+    func convertToBasicSivRoom() -> SivRoom {
+//        let isDirect = await self.isDirect()
+        let room = try?  self.fullRoom()
+        let isMarkedUnread: Bool = true
+        return SivRoom(
+            id: self.id(),
+            avatarUrl: self.avatarUrl(),
+            displayName: self.displayName() ?? "",
+            isDirect: false,
+            room: room,
+            membersCount: 0,
+            membership: self.membership(),
+            isMarkedUnread: isMarkedUnread
+        )
+    }
+}
+
+extension EventTimelineItem {
+    func getMessage() -> String? {
+            switch self.content {
+            case .msgLike(let content):
+                return content.getMessage()
+            case .callInvite:
+                return "Call Invite"
+            case .callNotify:
+                return "Call Notify"
+            case .roomMembership(let userId, let userDisplayName, let change, let reason):
+                return "\(userDisplayName ?? userId) \(change.debugDescription)"
+    //        )
+    //        case .profileChange(displayName: String?, prevDisplayName: String?, avatarUrl: String?, prevAvatarUrl: String?
+    //        )
+    //        case .state(stateKey: String, content: OtherState
+    //        )
+    //        case .failedToParseMessageLike(eventType: String, error: String
+    //        )
+    //        case .failedToParseState(eventType: String, stateKey: String, error: String
+    //        )
+            default:
+                return nil
+            }
+        }
+    
+    func generateSivMessage(previousMessage: SivMessage? = nil) -> SivMessage {
+        var message: String? = nil
+        var reactions: [Reaction] = []
+        var parentId: String? = nil
+        
+        switch self.content {
+        case .msgLike(let content):
+            message = content.getMessage()
+            reactions = content.reactions
+            parentId = content.inReplyTo?.eventId()
+        default:
+            break
+        }
+        
+        var newAvatar: String? = ""
+        var newName = ""
+        switch self.senderProfile {
+        case .ready(let displayName, _, let avatarUrl):
+            newAvatar = avatarUrl
+            newName = displayName?.nullableTrimmed ?? "?"
+        default:
+            break
+        }
+        return SivMessage(id: self.eventOrTransactionId.getIdString(), message: message ?? "", timestamp: self.timestamp, parentId: parentId, avatarURL: newAvatar, senderName: newName, reactions: reactions)
+    }
+}
+
+extension MsgLikeContent {
+    func getMessage() -> String? {
+        switch kind {
+        case .message(let content):
+            return content.body
+        default:
+            return nil
+        }
+    }
+}
+
+extension EventOrTransactionId {
+    func getIdString() -> String {
+        switch self {
+        case .eventId(let eventId):
+            return eventId
+        case .transactionId(let transactionId):
+            return transactionId
+        }
+    }
+}
+
+

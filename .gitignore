@@ -1,2 +1,12 @@
+## User settings
+xcuserdata/
+Siv.xcodeproj/xcuserdata/**/*
+*.xcuserstate
+Siv.xcodeproj/project.xcworkspace/xcuserdata/**/*
 
+.DS_Store
+.vscode/*
+
+## for git pruning
+stale_branches
 MatrixSiv/MatrixSiv.xcodeproj/project.xcworkspace/xcuserdata/raycastor.xcuserdatad/UserInterfaceState.xcuserstate
