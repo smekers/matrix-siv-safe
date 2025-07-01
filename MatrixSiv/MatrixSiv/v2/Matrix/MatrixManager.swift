@@ -10,6 +10,8 @@ import MatrixRustSDK
 import Combine
 import UIKit
 
+/// This class is a singleton that manages the Matrix client, sync service, and room list.
+/// It handles logging in, logging out, and provides methods to interact with rooms and messages.
 @MainActor @Observable final class MatrixManager {
     static let shared: MatrixManager = MatrixManager()
     
